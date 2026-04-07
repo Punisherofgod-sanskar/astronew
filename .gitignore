@@ -1,0 +1,52 @@
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*.so
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Project logs and experiment outputs
+.log/
+results/
+data/
+runs/
+wandb/
+
+# AstroDSB local artifacts
+AstroDSB/.log/
+AstroDSB/results/
+AstroDSB/runs/
+AstroDSB/wandb/
+AstroDSB/herschel_data/
+AstroDSB/**/__pycache__/
+
+# Common local model and metric outputs
+*.pt
+*.ckpt
+*.pth
+*.tensorboard
+*.npy
+*.npz
+
+# Local plotting / notebook exports
+*.png.tmp
+*.pdf.tmp
