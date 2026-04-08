@@ -25,10 +25,11 @@ from .network import Density128Net
 from .network import ISFR64Net
 from .network import MAG128Net
 from .diffusion import Diffusion
+from physics.losses import DensityLoss
 
 from ipdb import set_trace as debug
 from torch.utils.tensorboard import SummaryWriter
-writer = SummaryWriter()
+
 
 
 ## this if for Taurus B128
@@ -133,12 +134,6 @@ def build_optimizer_sched(opt, net, log):
 
     return optimizer, sched
 
-def make_beta_schedule(n_timestep=1000, linear_start=1e-4, linear_end=2e-2):
-    # return np.linspace(linear_start, linear_end, n_timestep)
-    betas = (
-        torch.linspace(linear_start ** 0.5, linear_end ** 0.5, n_timestep, dtype=torch.float64) ** 2
-    )
-    return betas.numpy()
 
 def all_cat_cpu(opt, log, t):
     if not opt.distributed: return t.detach().cpu()
@@ -148,6 +143,7 @@ def all_cat_cpu(opt, log, t):
 class Runner(object):
     def __init__(self, opt, log, save_opt=True):
         super(Runner,self).__init__()
+        self.density_loss_fn = DensityLoss(w_smooth=0.025, w_mass=0.005)
 
         # Save opt.
         if save_opt:
@@ -213,7 +209,6 @@ class Runner(object):
         return x0, x1, mask, y, cond
 
 
-
     def train(self, opt, train_dataset, val_dataset):
         self.writer = util.build_log_writer(opt)
         log = self.log
@@ -230,24 +225,38 @@ class Runner(object):
         for it in range(opt.num_itr):
             optimizer.zero_grad()
 
+            total_loss = 0.0
+
             for _ in range(n_inner_loop):
-                # ===== sample boundary pair from batch
                 data, y = next(train_loader)
-                # data shape: [batch, 2, H, W], channel0=corrupt, channel1=clean
+
                 x1 = data[:, 0:1, :, :].to(opt.device)
                 x0 = data[:, 1:2, :, :].to(opt.device)
 
-                # ===== compute loss =====
                 step = torch.randint(0, opt.interval, (x0.shape[0],), device=opt.device)
 
                 xt = self.diffusion.q_sample(step, x0, x1, ot_ode=opt.ot_ode)
                 label = self.compute_label(step, x0, xt)
 
-                pred = net(xt, step, cond=None)
-                assert xt.shape == label.shape == pred.shape
+                cond_x1 = x1 if getattr(opt, 'cond_x1', False) else None
+                pred = net(xt, step, cond=cond_x1)
 
-                loss = F.mse_loss(pred, label)
+                assert pred.shape == label.shape
+
+                data_loss = F.mse_loss(pred, label)
+
+                pred_x0 = self.compute_pred_x0(step, xt, pred)
+                pred_x0 = torch.tanh(pred_x0)
+
+                phys_loss = self.density_loss_fn(pred_x0)
+
+                lambda_phys = 0.5
+                loss = data_loss + lambda_phys * phys_loss
+
+                loss = loss / n_inner_loop
                 loss.backward()
+
+                total_loss += loss.detach()
 
             optimizer.step()
             ema.update()
@@ -258,10 +267,10 @@ class Runner(object):
                 1+it,
                 opt.num_itr,
                 "{:.2e}".format(optimizer.param_groups[0]['lr']),
-                "{:+.4f}".format(loss.item()),
+                "{:+.4f}".format(total_loss.item()),
             ))
             if it % 10 == 0:
-                self.writer.add_scalar(it, 'loss', loss.detach())
+                self.writer.add_scalar('loss', total_loss.item(), it)
 
             if it % 5000 == 0:
                 if opt.global_rank == 0:
@@ -424,7 +433,6 @@ class Runner(object):
         return xs, pred_x0
 
 
-    @torch.no_grad()
     @torch.no_grad()
     def evaluation(self, opt, it, val_loader):
 
