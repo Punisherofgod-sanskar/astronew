@@ -126,6 +126,28 @@ def _populate_channel_metadata(opt, dataset):
     return opt
 
 
+def _calibrate_density_log_effective_depth(opt, dataset):
+    if opt.task != "density":
+        return opt
+    if getattr(opt, "physics_density_observation_operator", "none") != "slab_column_density":
+        return opt
+    raw_value = getattr(opt, "physics_density_log_effective_depth", "0.0")
+    if str(raw_value).lower() != "auto":
+        opt.physics_density_log_effective_depth = float(raw_value)
+        return opt
+    if not hasattr(dataset, "observation") or not hasattr(dataset, "target"):
+        raise ValueError("Cannot auto-calibrate slab depth without raw observation/target arrays")
+
+    observation = np.asarray(dataset.observation, dtype=np.float64)
+    target = np.asarray(dataset.target, dtype=np.float64)
+    if observation.ndim == 4:
+        observation = observation[:, 0]
+    if target.ndim == 4:
+        target = target[:, 0]
+    opt.physics_density_log_effective_depth = float(np.mean(observation - target))
+    return opt
+
+
 def _validate_dataset_runtime(opt):
     if opt.task != "mag":
         return
@@ -212,6 +234,20 @@ def create_training_options():
     parser.add_argument("--ot-ode", action="store_true")
     parser.add_argument("--obs-noise-scale", type=float, default=0.1)
     parser.add_argument("--clip-denoise", action="store_true")
+    parser.add_argument("--physics-weight", type=float, default=0.0)
+    parser.add_argument("--physics-density-smooth-weight", type=float, default=0.02)
+    parser.add_argument("--physics-density-range-weight", type=float, default=0.01)
+    parser.add_argument("--physics-density-observation-weight", type=float, default=0.0)
+    parser.add_argument("--physics-density-gradient-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--physics-density-observation-operator",
+        type=str,
+        default="none",
+        choices=["none", "identity", "slab_column_density"],
+    )
+    parser.add_argument("--physics-density-log-effective-depth", type=str, default="0.0")
+    parser.add_argument("--physics-density-edge-scale", type=float, default=8.0)
+    parser.add_argument("--physics-time-weight-power", type=float, default=1.0)
 
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--microbatch", type=int, default=2)
@@ -289,10 +325,16 @@ def main(opt):
     train_dataset = build_task_dataset(opt, train=True)
     val_dataset = build_task_dataset(opt, train=False)
     opt = _populate_channel_metadata(opt, train_dataset)
+    opt = _calibrate_density_log_effective_depth(opt, train_dataset)
     _validate_dataset_runtime(opt)
     log.info(
         f"[Data] task={opt.task} obs_channels={opt.observation_channels} target_channels={opt.target_channels}"
     )
+    if opt.task == "density" and getattr(opt, "physics_density_observation_operator", "none") == "slab_column_density":
+        log.info(
+            f"[Physics] density_observation_operator=slab_column_density "
+            f"log_effective_depth={opt.physics_density_log_effective_depth:.6f}"
+        )
     if opt.task == "mag":
         dataset_path = _resolve_dataset_file_for_logging(opt)
         first_sample = train_dataset[0]

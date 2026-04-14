@@ -16,6 +16,7 @@ from torch.utils.data import Subset
 from torch.utils.data.distributed import DistributedSampler
 
 from datasets_mod import denormalize_sample, normalize_array
+from physics.losses import build_physics_regularizer
 
 from . import util
 from .diffusion import Diffusion
@@ -172,6 +173,7 @@ class Runner:
             num_res_blocks=opt.num_res_blocks,
         )
         self.ema = ExponentialMovingAverage(self.net.parameters(), decay=opt.ema)
+        self.physics_regularizer = build_physics_regularizer(opt)
 
         checkpoint = None
         if opt.load:
@@ -415,7 +417,13 @@ class Runner:
                 xt = self.diffusion.q_sample(step, x1=x1, y_noisy=y_noisy, ot_ode=opt.ot_ode)
                 target = self.compute_target(step, y_noisy, x1)
                 pred = net(xt, step, cond=y)
-                loss = F.mse_loss(pred, target)
+                data_loss = F.mse_loss(pred, target)
+                loss = data_loss
+                physics_log = None
+                if self.physics_regularizer is not None:
+                    pred_x1 = self.compute_pred_x1(step, y_noisy, pred, clip_denoise=opt.clip_denoise)
+                    physics_loss, physics_log = self.physics_regularizer(pred_x1, y, step=step)
+                    loss = loss + opt.physics_weight * physics_loss
                 loss.backward()
                 loss_value = loss.detach()
 
@@ -434,6 +442,21 @@ class Runner:
             )
             if it % 10 == 0:
                 self.writer.add_scalar(it, "loss", loss_value)
+                self.writer.add_scalar(it, "data_loss", data_loss.detach())
+                if physics_log is not None:
+                    self.writer.add_scalar(it, "physics_weight_schedule", torch.tensor(physics_log["weight"]))
+                    self.writer.add_scalar(it, "physics_smooth", torch.tensor(physics_log["smooth"]))
+                    self.writer.add_scalar(it, "physics_in_range", torch.tensor(physics_log["in_range"]))
+                    self.writer.add_scalar(
+                        it,
+                        "physics_obs_consistency",
+                        torch.tensor(physics_log["obs_consistency"]),
+                    )
+                    self.writer.add_scalar(
+                        it,
+                        "physics_grad_consistency",
+                        torch.tensor(physics_log["grad_consistency"]),
+                    )
 
             if it % opt.save_interval == 0 and opt.global_rank == 0:
                 self._save_checkpoint(optimizer, sched)

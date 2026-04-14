@@ -10,11 +10,12 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from physics.losses import SlabColumnDensityOperator, build_physics_regularizer
 from astrodsb.diffusion import Diffusion
 from astrodsb.runner import Runner
 from datasets_mod import build_task_dataset
 from logger import Logger
-from train import validate_runtime_options
+from train import _calibrate_density_log_effective_depth, validate_runtime_options
 
 
 def make_opt(tmpdir, **overrides):
@@ -81,6 +82,15 @@ def make_opt(tmpdir, **overrides):
         taurus_path=Path(tmpdir) / "missing_taurus.npy",
         data_range_tolerance=1e-3,
         normalization_mode="auto",
+        physics_weight=0.0,
+        physics_density_smooth_weight=0.02,
+        physics_density_range_weight=0.01,
+        physics_density_observation_weight=0.0,
+        physics_density_gradient_weight=0.0,
+        physics_density_observation_operator="none",
+        physics_density_log_effective_depth="0.0",
+        physics_density_edge_scale=8.0,
+        physics_time_weight_power=1.0,
     )
     base.update(overrides)
     base["log_dir"].mkdir(parents=True, exist_ok=True)
@@ -560,6 +570,136 @@ class AstroDSBTests(unittest.TestCase):
             )
             with self.assertRaises(ValueError):
                 _ = build_task_dataset(opt, train=True)
+
+    def test_density_physics_regularizer_penalizes_out_of_range_predictions(self):
+        opt = SimpleNamespace(
+            task="density",
+            physics_weight=1.0,
+            physics_density_smooth_weight=0.0,
+            physics_density_range_weight=1.0,
+            physics_density_observation_weight=0.0,
+            physics_density_gradient_weight=0.0,
+            physics_density_observation_operator="none",
+            physics_density_edge_scale=8.0,
+            physics_time_weight_power=1.0,
+        )
+        regularizer = build_physics_regularizer(opt)
+        prediction = torch.full((1, 1, 8, 8), 1.5)
+        observation = torch.zeros((1, 1, 8, 8))
+
+        loss, log = regularizer(prediction, observation)
+
+        self.assertGreater(loss.item(), 0.0)
+        self.assertGreater(log["in_range"], 0.0)
+
+    def test_density_physics_regularizer_identity_operator_requires_matching_shapes(self):
+        opt = SimpleNamespace(
+            task="density",
+            physics_weight=1.0,
+            physics_density_smooth_weight=0.0,
+            physics_density_range_weight=0.0,
+            physics_density_observation_weight=1.0,
+            physics_density_gradient_weight=0.0,
+            physics_density_observation_operator="identity",
+            physics_density_edge_scale=8.0,
+            physics_time_weight_power=1.0,
+        )
+        regularizer = build_physics_regularizer(opt)
+        prediction = torch.zeros((1, 1, 8, 8))
+        observation = torch.zeros((1, 2, 8, 8))
+
+        with self.assertRaises(ValueError):
+            regularizer(prediction, observation)
+
+    def test_magnetic_physics_regularizer_is_rejected_for_scalar_target_pipeline(self):
+        opt = SimpleNamespace(
+            task="mag",
+            physics_weight=1.0,
+        )
+
+        with self.assertRaises(ValueError):
+            build_physics_regularizer(opt)
+
+    def test_slab_column_density_operator_applies_log_depth_shift_in_physical_space(self):
+        operator = SlabColumnDensityOperator(
+            target_min=2.0,
+            target_max=6.0,
+            observation_min=20.0,
+            observation_max=24.0,
+            log_effective_depth=18.0,
+        )
+        prediction = torch.zeros((1, 1, 4, 4))
+
+        projected = operator(prediction)
+
+        self.assertTrue(torch.allclose(projected, torch.zeros_like(projected)))
+
+    def test_density_physics_regularizer_slab_operator_matches_consistent_observation(self):
+        opt = SimpleNamespace(
+            task="density",
+            physics_weight=1.0,
+            physics_density_smooth_weight=0.0,
+            physics_density_range_weight=0.0,
+            physics_density_observation_weight=1.0,
+            physics_density_gradient_weight=0.0,
+            physics_density_observation_operator="slab_column_density",
+            physics_density_log_effective_depth=18.0,
+            physics_density_edge_scale=8.0,
+            physics_time_weight_power=1.0,
+            observation_normalization={"min_value": 20.0, "max_value": 24.0},
+            target_normalization={"min_value": 2.0, "max_value": 6.0},
+        )
+        regularizer = build_physics_regularizer(opt)
+        prediction = torch.zeros((1, 1, 4, 4))
+        observation = torch.zeros((1, 1, 4, 4))
+
+        loss, log = regularizer(prediction, observation)
+
+        self.assertAlmostEqual(loss.item(), 0.0, places=6)
+        self.assertAlmostEqual(log["obs_consistency"], 0.0, places=6)
+
+    def test_density_physics_regularizer_reports_gradient_consistency(self):
+        opt = SimpleNamespace(
+            task="density",
+            physics_weight=1.0,
+            physics_density_smooth_weight=0.0,
+            physics_density_range_weight=0.0,
+            physics_density_observation_weight=1.0,
+            physics_density_gradient_weight=1.0,
+            physics_density_observation_operator="slab_column_density",
+            physics_density_log_effective_depth=18.0,
+            physics_density_edge_scale=8.0,
+            physics_time_weight_power=1.0,
+            obs_noise_scale=0.1,
+            interval=8,
+            observation_normalization={"min_value": 20.0, "max_value": 24.0},
+            target_normalization={"min_value": 2.0, "max_value": 6.0},
+        )
+        regularizer = build_physics_regularizer(opt)
+        prediction = torch.zeros((1, 1, 4, 4))
+        observation = torch.zeros((1, 1, 4, 4))
+        observation[:, :, :, 2:] = 0.5
+        step = torch.tensor([7], dtype=torch.long)
+
+        loss, log = regularizer(prediction, observation, step=step)
+
+        self.assertGreaterEqual(loss.item(), 0.0)
+        self.assertGreater(log["grad_consistency"], 0.0)
+        self.assertGreater(log["weight"], 0.0)
+
+    def test_auto_calibrates_density_log_effective_depth_from_dataset_pairs(self):
+        observation = np.full((2, 1, 4, 4), 23.0, dtype=np.float32)
+        target = np.full((2, 1, 4, 4), 5.0, dtype=np.float32)
+        dataset = SimpleNamespace(observation=observation, target=target)
+        opt = SimpleNamespace(
+            task="density",
+            physics_density_observation_operator="slab_column_density",
+            physics_density_log_effective_depth="auto",
+        )
+
+        updated = _calibrate_density_log_effective_depth(opt, dataset)
+
+        self.assertAlmostEqual(updated.physics_density_log_effective_depth, 18.0, places=6)
 
 
 if __name__ == "__main__":
