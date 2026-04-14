@@ -91,6 +91,13 @@ def make_opt(tmpdir, **overrides):
         physics_density_log_effective_depth="0.0",
         physics_density_edge_scale=8.0,
         physics_time_weight_power=1.0,
+        physics_mag_smooth_weight=0.02,
+        physics_mag_range_weight=0.01,
+        physics_mag_observation_weight=0.0,
+        physics_mag_gradient_weight=0.0,
+        physics_mag_dcf_weight=0.0,
+        physics_mag_dcf_q=1.0,
+        physics_mag_edge_scale=8.0,
     )
     base.update(overrides)
     base["log_dir"].mkdir(parents=True, exist_ok=True)
@@ -611,14 +618,93 @@ class AstroDSBTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             regularizer(prediction, observation)
 
-    def test_magnetic_physics_regularizer_is_rejected_for_scalar_target_pipeline(self):
+    def test_magnetic_physics_regularizer_builds_for_scalar_observable_pipeline(self):
         opt = SimpleNamespace(
             task="mag",
             physics_weight=1.0,
+            mag_channel_schema="default_xu2025",
+            mag_bridge_mode="projected_b_field",
+            physics_mag_smooth_weight=0.0,
+            physics_mag_range_weight=0.0,
+            physics_mag_observation_weight=1.0,
+            physics_mag_gradient_weight=0.0,
+            physics_mag_dcf_weight=0.0,
+            physics_mag_dcf_q=1.0,
+            physics_mag_edge_scale=8.0,
+            physics_time_weight_power=1.0,
+            obs_noise_scale=0.1,
+            interval=8,
+            observation_normalization={"min_value": 0.0, "max_value": 1.0},
+            target_normalization={"min_value": 0.0, "max_value": 1.0},
         )
+        regularizer = build_physics_regularizer(opt)
+        prediction = torch.zeros((1, 1, 4, 4))
+        observation = torch.zeros((1, 4, 4, 4))
 
-        with self.assertRaises(ValueError):
-            build_physics_regularizer(opt)
+        loss, log = regularizer(prediction, observation, step=torch.tensor([7], dtype=torch.long))
+
+        self.assertGreaterEqual(loss.item(), 0.0)
+        self.assertIn("obs_consistency", log)
+
+    def test_magnetic_physics_regularizer_direct_observation_consistency_zero_when_matching(self):
+        opt = SimpleNamespace(
+            task="mag",
+            physics_weight=1.0,
+            mag_channel_schema="default_xu2025",
+            mag_bridge_mode="projected_b_field",
+            physics_mag_smooth_weight=0.0,
+            physics_mag_range_weight=0.0,
+            physics_mag_observation_weight=1.0,
+            physics_mag_gradient_weight=0.0,
+            physics_mag_dcf_weight=0.0,
+            physics_mag_dcf_q=1.0,
+            physics_mag_edge_scale=8.0,
+            physics_time_weight_power=1.0,
+            obs_noise_scale=0.1,
+            interval=8,
+            observation_normalization={"min_value": 0.0, "max_value": 1.0},
+            target_normalization={"min_value": 0.0, "max_value": 1.0},
+        )
+        regularizer = build_physics_regularizer(opt)
+        prediction = torch.full((1, 1, 4, 4), 0.25)
+        observation = torch.zeros((1, 4, 4, 4))
+        observation[:, 3:4] = 0.25
+
+        loss, log = regularizer(prediction, observation, step=torch.tensor([7], dtype=torch.long))
+
+        self.assertAlmostEqual(log["obs_consistency"], 0.0, places=6)
+        self.assertGreaterEqual(loss.item(), 0.0)
+
+    def test_magnetic_physics_regularizer_reports_dcf_consistency(self):
+        opt = SimpleNamespace(
+            task="mag",
+            physics_weight=1.0,
+            mag_channel_schema="default_xu2025",
+            mag_bridge_mode="projected_b_field",
+            physics_mag_smooth_weight=0.0,
+            physics_mag_range_weight=0.0,
+            physics_mag_observation_weight=0.0,
+            physics_mag_gradient_weight=0.0,
+            physics_mag_dcf_weight=1.0,
+            physics_mag_dcf_q=1.0,
+            physics_mag_edge_scale=8.0,
+            physics_time_weight_power=1.0,
+            obs_noise_scale=0.1,
+            interval=8,
+            observation_normalization={"min_value": 0.0, "max_value": 1.0},
+            target_normalization={"min_value": 0.0, "max_value": 1.0},
+        )
+        regularizer = build_physics_regularizer(opt)
+        prediction = torch.zeros((1, 1, 4, 4))
+        observation = torch.zeros((1, 4, 4, 4))
+        observation[:, 0:1] = 0.7
+        observation[:, 1:2] = -0.4
+        observation[:, 2:3] = 0.3
+
+        loss, log = regularizer(prediction, observation, step=torch.tensor([7], dtype=torch.long))
+
+        self.assertGreaterEqual(loss.item(), 0.0)
+        self.assertIn("dcf_consistency", log)
 
     def test_slab_column_density_operator_applies_log_depth_shift_in_physical_space(self):
         operator = SlabColumnDensityOperator(

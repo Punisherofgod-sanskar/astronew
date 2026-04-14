@@ -248,6 +248,13 @@ def create_training_options():
     parser.add_argument("--physics-density-log-effective-depth", type=str, default="0.0")
     parser.add_argument("--physics-density-edge-scale", type=float, default=8.0)
     parser.add_argument("--physics-time-weight-power", type=float, default=1.0)
+    parser.add_argument("--physics-mag-smooth-weight", type=float, default=0.02)
+    parser.add_argument("--physics-mag-range-weight", type=float, default=0.01)
+    parser.add_argument("--physics-mag-observation-weight", type=float, default=0.0)
+    parser.add_argument("--physics-mag-gradient-weight", type=float, default=0.0)
+    parser.add_argument("--physics-mag-dcf-weight", type=float, default=0.0)
+    parser.add_argument("--physics-mag-dcf-q", type=float, default=1.0)
+    parser.add_argument("--physics-mag-edge-scale", type=float, default=8.0)
 
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--microbatch", type=int, default=2)

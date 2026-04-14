@@ -17,3 +17,10 @@ def smoothness_loss(rho):
 def mass_conservation_loss(rho):
     total_mass = rho.sum(dim=[2,3])
     return ((total_mass - total_mass.mean())**2).mean()
+
+def smoothness_loss_B(B):
+    loss = 0
+    for c in range(B.shape[1]):
+        dx, dy = gradient(B[:,c:c+1])
+        loss += (dx.abs() + dy.abs()).mean()
+    return loss / B.shape[1]

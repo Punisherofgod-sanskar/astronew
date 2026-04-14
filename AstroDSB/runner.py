@@ -159,9 +159,9 @@ class Runner(object):
 
         noise_levels = torch.linspace(opt.t0, opt.T, opt.interval, device=opt.device) * opt.interval
 
-        self.net = Density128Net(log, noise_levels=noise_levels, cond=True)
+        #self.net = Density128Net(log, noise_levels=noise_levels, cond=True)
         # self.net = ISFR64Net(log, noise_levels=noise_levels, cond=True)
-        # self.net = MAG128Net(log, noise_levels=noise_levels, cond=True)
+        self.net = MAG128Net(log, noise_levels=noise_levels, cond=True)
 
         self.ema = ExponentialMovingAverage(self.net.parameters(), decay=opt.ema)
 

@@ -457,6 +457,12 @@ class Runner:
                         "physics_grad_consistency",
                         torch.tensor(physics_log["grad_consistency"]),
                     )
+                    if "dcf_consistency" in physics_log:
+                        self.writer.add_scalar(
+                            it,
+                            "physics_dcf_consistency",
+                            torch.tensor(physics_log["dcf_consistency"]),
+                        )
 
             if it % opt.save_interval == 0 and opt.global_rank == 0:
                 self._save_checkpoint(optimizer, sched)
